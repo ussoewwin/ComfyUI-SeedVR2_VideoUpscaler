@@ -156,32 +156,49 @@ class VideoDiffusionInfer():
                 # Use autocast if VAE dtype differs from input dtype
                 # Skip autocast on MPS (only supports bf16, unified memory = no benefit)
                 # Instead, explicitly convert input to model dtype
-                if vae_dtype != sample.dtype:
-                    if device.type == 'mps':
-                        # MPS: explicit dtype conversion instead of autocast
-                        sample = sample.to(vae_dtype)
-                        if use_sample:
-                            latent = self.vae.encode(sample, tiled=self.encode_tiled, tile_size=self.encode_tile_size, 
-                                                    tile_overlap=self.encode_tile_overlap).latent
-                        else:
-                            latent = self.vae.encode(sample, tiled=self.encode_tiled, tile_size=self.encode_tile_size,
-                                                tile_overlap=self.encode_tile_overlap).posterior.mode().squeeze(2)
-                    else:
-                        with torch.autocast(device.type, sample.dtype, enabled=True):
+                import gc
+                latent_chunks = []
+                num_frames = sample.size(0)
+
+                for f_idx in range(num_frames):
+                    frame_sample = sample[f_idx:f_idx+1]
+                    
+                    if vae_dtype != frame_sample.dtype:
+                        if device.type == 'mps':
+                            # MPS: explicit dtype conversion instead of autocast
+                            frame_sample = frame_sample.to(vae_dtype)
                             if use_sample:
-                                latent = self.vae.encode(sample, tiled=self.encode_tiled, tile_size=self.encode_tile_size, 
+                                frame_latent = self.vae.encode(frame_sample, tiled=self.encode_tiled, tile_size=self.encode_tile_size, 
                                                         tile_overlap=self.encode_tile_overlap).latent
                             else:
-                                latent = self.vae.encode(sample, tiled=self.encode_tiled, tile_size=self.encode_tile_size,
+                                frame_latent = self.vae.encode(frame_sample, tiled=self.encode_tiled, tile_size=self.encode_tile_size,
                                                     tile_overlap=self.encode_tile_overlap).posterior.mode().squeeze(2)
-                else:
-                    if use_sample:
-                        latent = self.vae.encode(sample, tiled=self.encode_tiled, tile_size=self.encode_tile_size, 
-                                                tile_overlap=self.encode_tile_overlap).latent
+                        else:
+                            with torch.autocast(device.type, frame_sample.dtype, enabled=True):
+                                if use_sample:
+                                    frame_latent = self.vae.encode(frame_sample, tiled=self.encode_tiled, tile_size=self.encode_tile_size, 
+                                                            tile_overlap=self.encode_tile_overlap).latent
+                                else:
+                                    frame_latent = self.vae.encode(frame_sample, tiled=self.encode_tiled, tile_size=self.encode_tile_size,
+                                                        tile_overlap=self.encode_tile_overlap).posterior.mode().squeeze(2)
                     else:
-                        # Deterministic vae encode, only used for i2v inference (optionally)
-                        latent = self.vae.encode(sample, tiled=self.encode_tiled, tile_size=self.encode_tile_size,
-                                            tile_overlap=self.encode_tile_overlap).posterior.mode().squeeze(2)
+                        if use_sample:
+                            frame_latent = self.vae.encode(frame_sample, tiled=self.encode_tiled, tile_size=self.encode_tile_size, 
+                                                    tile_overlap=self.encode_tile_overlap).latent
+                        else:
+                            # Deterministic vae encode, only used for i2v inference (optionally)
+                            frame_latent = self.vae.encode(frame_sample, tiled=self.encode_tiled, tile_size=self.encode_tile_size,
+                                                tile_overlap=self.encode_tile_overlap).posterior.mode().squeeze(2)
+
+                    latent_chunks.append(frame_latent)
+                    
+                    del frame_sample
+                    if device.type == 'cuda':
+                        torch.cuda.empty_cache()
+                    gc.collect()
+
+                latent = torch.cat(latent_chunks, dim=0)
+                del latent_chunks
 
                 latent = latent.unsqueeze(2) if latent.ndim == 4 else latent
                 latent = optimized_channels_to_last(latent)
@@ -242,28 +259,46 @@ class VideoDiffusionInfer():
 
                 # Use autocast if VAE dtype differs from latent dtype
                 # Skip autocast on MPS (only supports bf16, unified memory = no benefit)
-                if vae_dtype != latent.dtype:
-                    if device.type == 'mps':
-                        # MPS: explicit dtype conversion instead of autocast
-                        latent = latent.to(vae_dtype)
-                        sample = self.vae.decode(
-                            latent,
-                            tiled=self.decode_tiled, tile_size=self.decode_tile_size,
-                            tile_overlap=self.decode_tile_overlap
-                        ).sample
-                    else:
-                        with torch.autocast(device.type, latent.dtype, enabled=True):
-                            sample = self.vae.decode(
-                                latent,
+                import gc
+                sample_chunks = []
+                num_frames = latent.size(0)
+                self.debug.log(f"Decoding {num_frames} frames iteratively to prevent OOM...", category="vae", indent_level=2)
+
+                for f_idx in range(num_frames):
+                    frame_latent = latent[f_idx:f_idx+1]
+                    
+                    if vae_dtype != frame_latent.dtype:
+                        if device.type == 'mps':
+                            # MPS: explicit dtype conversion instead of autocast
+                            frame_latent = frame_latent.to(vae_dtype)
+                            frame_sample = self.vae.decode(
+                                frame_latent,
                                 tiled=self.decode_tiled, tile_size=self.decode_tile_size,
                                 tile_overlap=self.decode_tile_overlap
                             ).sample
-                else:
-                    sample = self.vae.decode(
-                        latent,
-                        tiled=self.decode_tiled, tile_size=self.decode_tile_size,
-                        tile_overlap=self.decode_tile_overlap
-                    ).sample
+                        else:
+                            with torch.autocast(device.type, frame_latent.dtype, enabled=True):
+                                frame_sample = self.vae.decode(
+                                    frame_latent,
+                                    tiled=self.decode_tiled, tile_size=self.decode_tile_size,
+                                    tile_overlap=self.decode_tile_overlap
+                                ).sample
+                    else:
+                        frame_sample = self.vae.decode(
+                            frame_latent,
+                            tiled=self.decode_tiled, tile_size=self.decode_tile_size,
+                            tile_overlap=self.decode_tile_overlap
+                        ).sample
+
+                    sample_chunks.append(frame_sample)
+                    
+                    del frame_latent
+                    if device.type == 'cuda':
+                        torch.cuda.empty_cache()
+                    gc.collect()
+
+                sample = torch.cat(sample_chunks, dim=0)
+                del sample_chunks
 
                 if hasattr(self.vae, "postprocess"):
                     sample = self.vae.postprocess(sample)
