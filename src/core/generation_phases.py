@@ -876,8 +876,11 @@ def decode_all_batches(
     debug.log(f"Pre-allocating output tensor: {total_frames} frames, {true_w}x{true_h}px, {channels_str} ({required_gb:.2f}GB)", 
               category="setup", force=True)
     
-    # NumPy互換性を確保するため、compute_dtypeがbfloat16の場合はfloat16を使用
-    storage_dtype = torch.float16 if ctx['compute_dtype'] == torch.bfloat16 else ctx['compute_dtype']
+    # ComfyUIおよびVideoHelperSuiteとの後方互換性を完全保証するため、
+    # 最終出力用テンソルは最初から一貫して float32 で確保する。
+    # 最後に float16 -> float32 に一括変換すると一時的にメモリが2倍(元データ＋変換後の両抱え)になり
+    # 大規模出力時にOOMの致命傷となるため、スパイクを完全に根絶する。
+    storage_dtype = torch.float32
     ctx['final_video'] = torch.empty((total_frames, true_h, true_w, C), dtype=storage_dtype, device=target_device)
     
     # Track batch write positions for Phase 4 processing
