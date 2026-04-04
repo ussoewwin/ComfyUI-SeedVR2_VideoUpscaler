@@ -1360,11 +1360,12 @@ def postprocess_all_batches(
                     break
             
             # Move to final_video device and write back in-place
+            target_dtype = ctx['final_video'].dtype
             sample = manage_tensor(
                 tensor=sample,
                 target_device=ctx['final_video'].device,
                 tensor_name=f"sample_{info_idx+1}_final",
-                dtype=ctx['compute_dtype'],
+                dtype=target_dtype,
                 debug=debug,
                 reason="writing processed result to final_video",
                 indent_level=1

@@ -206,6 +206,7 @@ class SeedVR2VideoUpscaler(io.ComfyNode):
                         "• 'cuda:X': Offload to another GPU (good balance if available, faster than CPU)"
                     )
                 ),
+
                 io.Boolean.Input("enable_debug",
                     default=False,
                     optional=True,
@@ -516,18 +517,10 @@ class SeedVR2VideoUpscaler(io.ComfyNode):
             sample = ctx['final_video']
             debug.log("", category="none", force=True)
 
-            # Ensure CPU tensor in float32 for maximum ComfyUI compatibility
+            # Ensure CPU tensor for ComfyUI compatibility, intentionally skipping to(float32) to prevent OOM spikes.
             if torch.is_tensor(sample):
                 if sample.is_cuda or sample.is_mps:
                     sample = sample.cpu()
-                if sample.dtype != torch.float32:
-                    src_dtype = sample.dtype
-                    try:
-                        sample = sample.to(torch.float32)
-                        debug.log(f"Converted output from {src_dtype} to float32", category="precision")
-                    except Exception as e:
-                        debug.log(f"Could not convert to float32: {e}. Output is {src_dtype}, compatibility with other nodes not guaranteed", 
-                                  level="WARNING", category="precision", force=True)
 
             debug.log("Upscaling completed successfully!", category="success", force=True)
             debug.end_timer("generation", "Video generation")
