@@ -28,9 +28,26 @@ def ensure_package(package_name, import_name=None):
             print(f"    {sys.executable} -m pip install \"{package_name}\"")
         print("="*80 + "\n")
 
-ensure_package("diffusers>=0.33.1", "diffusers")
-ensure_package("transformers")
-ensure_package("accelerate")
+# All critical dependencies from requirements.txt
+# (torch/torchvision/numpy are assumed present via ComfyUI)
+_REQUIRED_PACKAGES = [
+    ("safetensors", None),
+    ("tqdm", None),
+    ("psutil", None),
+    ("einops", None),
+    ("omegaconf>=2.3.0", "omegaconf"),
+    ("diffusers>=0.33.1", "diffusers"),
+    ("transformers", None),
+    ("accelerate", None),
+    ("peft>=0.17.0", "peft"),
+    ("rotary_embedding_torch>=0.5.3", "rotary_embedding_torch"),
+    ("opencv-python", "cv2"),
+    ("gguf", None),
+    ("matplotlib", None),
+]
+
+for pkg, imp in _REQUIRED_PACKAGES:
+    ensure_package(pkg, imp)
 
 from .src.optimization.compatibility import ensure_triton_compat  # noqa: F401
 from .src.interfaces import comfy_entrypoint, SeedVR2Extension
