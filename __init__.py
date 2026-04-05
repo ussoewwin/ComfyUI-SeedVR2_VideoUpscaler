@@ -4,7 +4,6 @@ Official SeedVR2 integration for ComfyUI
 """
 
 import sys
-import importlib.util
 import subprocess
 
 # Check critical dependencies early to provide better error messages
@@ -13,7 +12,12 @@ def ensure_package(package_name, import_name=None):
     if import_name is None:
         import_name = package_name.split(">")[0].split("=")[0].split("<")[0]
     
-    if importlib.util.find_spec(import_name) is None:
+    try:
+        __import__(import_name)
+        return  # Already available
+    except (ImportError, ModuleNotFoundError):
+        pass
+    if True:  # Package is missing - install it
         print("\n" + "="*80)
         print(f"SeedVR2: '{import_name}' module not found.")
         print(f"SeedVR2: Current Python executable: {sys.executable}")
