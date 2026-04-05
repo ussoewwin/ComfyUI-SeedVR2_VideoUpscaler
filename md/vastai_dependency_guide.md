@@ -1,48 +1,44 @@
-# ComfyUIクラウド環境における依存関係見失いエラーの全容と解決策
+# Comprehensive Guide to Dependency Errors in ComfyUI Cloud Environments
 
-このドキュメントは、Vast.aiやRunPodなどのクラウド環境でSeedVR2（及びその他の重度な外部依存を持つカスタムノード）を動作させる際に発生する `ModuleNotFoundError` エラーについて、その本質的な原因から具体的なコードレベルの修正内容までを完全解説したものです。
+This document provides a complete explanation of the `ModuleNotFoundError` issues often encountered when running SeedVR2 (and other custom nodes with heavy external dependencies) on cloud environments like Vast.ai or RunPod. It details the root causes and explains the automated code-level fix implemented in this repository.
 
 ---
 
-## 1. エラーの内容と発生のメカニズム
+## 1. The Error and How It Occurs
 
-**【発生したエラー】**
-
+**[The Error]**
 ```python
 ModuleNotFoundError: No module named 'diffusers'
 ModuleNotFoundError: No module named 'rotary_embedding_torch'
 ```
 
-Vast.aiのターミナル上で `pip install diffusers` などを実行して**「Successfully installed」**と表示されているにもかかわらず、ComfyUIでSeedVR2がロードされる際に上記のエラーが発生して強制終了します。
+Users often encounter this error when ComfyUI attempts to load SeedVR2, even if they have just run `pip install diffusers` in their Vast.ai terminal and saw a **"Successfully installed"** message.
 
-### 本質的な原因（2つの要因の衝突）
+### Core Causes (A Clash of Two Factors)
 
-このエラーは、以下の「ComfyUIの思想」と「クラウド環境の仕様」という2つの要因が最悪の形で噛み合った結果発生します。
+This error is the result of a "perfect storm" between ComfyUI's core design philosophy and the way cloud environment templates are structured.
 
-#### 要因A：ComfyUIの「反・巨大ライブラリ」思想
+#### Factor A: ComfyUI's "Anti-Bloat" Philosophy
+In the AI image generation ecosystem, libraries like `diffusers`, `transformers`, and `accelerate` are **absolute industry standards** (Automatic1111 runs on them). 
+However, ComfyUI was designed with exactly the opposite philosophy: to run lean, fast, and purely on raw PyTorch, avoiding heavy abstractions and bloat. Therefore, **ComfyUI intentionally excludes `diffusers` and similar libraries from its official core requirements.**
+As a result, a "clean" ComfyUI environment provided by cloud platforms will not have these standard libraries installed by default.
 
-画像の生成AI界隈において、`diffusers` や `transformers`、`accelerate` などのライブラリは**あって当然の超・標準ライブラリ**です（Automatic1111等もこれらを利用しています）。
-しかし、ComfyUIは「不要な抽象化や巨大なライブラリに頼らず、PyTorchのみで軽量・最速な計算グラフを回す」という思想で作られています。そのため、**あえて `diffusers` 等を本体の必須環境から徹底的に排除しています。**
-これにより、クラウド側が用意した「クリーンなComfyUI環境」には、一般には標準とされるライブラリ群がインストールされていません。
+#### Factor B: "Invisible" Multiple Python Environments
+ComfyUI templates on Vast.ai typically separate the computing environment into multiple layers:
+1. **Terminal (User-facing)**: The system Python (e.g., `/usr/bin/python`).
+2. **ComfyUI Execution Process**: A hidden Python virtual environment (e.g., `/workspace/ComfyUI/venv/bin/python`).
 
-#### 要因B：クラウド環境での「見えない複数Python環境」
-
-Vast.aiによるComfyUIテンプレートでは、通常以下のように環境が分断されています。
-
-1. **ターミナル（ユーザー側）**: `/usr/bin/python` 等のシステムPython
-2. **ComfyUI実行プロセス**: `/workspace/ComfyUI/venv/bin/python` のような隠されたPython仮想環境 (venv)
-
-ユーザーがターミナルを開いて叩く `pip install` は常に「システム側」へ向けて実行されます。しかし、実際にノードをロードして動かしているのは「ComfyUI実行プロセス」側のPythonです。ComfyUIの仮想環境には手が出せず、**UI上からはインストール先を指定する術が存在しません。**
+When a user opens a terminal and types `pip install`, the command always targets the "System" environment. However, ComfyUI actually loads nodes using the "Execution Process" environment. Because users do not have an easy way to target the hidden virtual environment from the UI, manual installation attempts fall into the wrong destination, causing the `ModuleNotFoundError`.
 
 ---
 
-## 2. 修正したファイルとコードの詳細
+## 2. The Solution (Code Modification Details)
 
-この設計上の罠を力技で突破するため、SeedVR2の起動エントリポイントである `__init__.py` を大幅に書き換えました。
+To break through this design trap, we heavily modified the startup entry point of SeedVR2 (`__init__.py`).
 
-**修正対象ファイル:** `/ComfyUI/custom_nodes/ComfyUI-SeedVR2_VideoUpscaler/__init__.py`
+**Modified File:** `/ComfyUI/custom_nodes/ComfyUI-SeedVR2_VideoUpscaler/__init__.py`
 
-### 実装したコード（抜粋）
+### Implementation Details
 
 ```python
 import sys
@@ -50,16 +46,16 @@ import subprocess
 
 def ensure_package(package_name, import_name=None):
     if import_name is None:
-        import_name = package_name.split("\>")[0].split("=")[0].split("<")[0]
+        import_name = package_name.split(">")[0].split("=")[0].split("<")[0]
     
     try:
-        # まず実際にimportを試行し、機能するか確認する
+        # First, attempt to actually import the module
         __import__(import_name)
-        return  # 既にインストールされていればスキップ
+        return  # Already available
     except (ImportError, ModuleNotFoundError):
         pass
     
-    # パッケージが見つからなかった場合の強行インストール処理
+    # Package is missing - install it
     print("\n" + "="*80)
     print(f"SeedVR2: '{import_name}' module not found.")
     print(f"SeedVR2: Current Python executable: {sys.executable}")
@@ -71,7 +67,7 @@ def ensure_package(package_name, import_name=None):
         print(f"SeedVR2: Auto-installation failed: {e}")
     print("="*80 + "\n")
 
-# requirements.txtのすべての依存関係を自動インストールの対象に登録
+# Register all dependencies from requirements.txt for auto-installation
 _REQUIRED_PACKAGES = [
     ("safetensors", None),
     ("tqdm", None),
@@ -81,7 +77,7 @@ _REQUIRED_PACKAGES = [
     ("accelerate", None),
     ("peft>=0.17.0", "peft"),
     ("rotary_embedding_torch>=0.5.3", "rotary_embedding_torch"),
-    ("opencv-python", "cv2"), # pip名とimport名が異なるもののマッピング
+    ("opencv-python", "cv2"), # Mapping pip name to import name
     ("gguf", None),
 ]
 
@@ -91,28 +87,23 @@ for pkg, imp in _REQUIRED_PACKAGES:
 
 ---
 
-## 3. コードの意味とその効果（なぜこれで解決するのか）
+## 3. How and Why This Works
 
-追加されたコードがどのように「環境のすれ違い」を解決しているのかを解説します。
+Here is a breakdown of why this specific code resolves the environment mismatch:
 
-### ① `sys.executable` による「現在位置」の特定と実行
+### 1. Identifying the "True Path" via `sys.executable`
+The most critical part of this fix is the use of `sys.executable`. 
+`sys.executable` points to **the exact path of the Python interpreter that is currently executing the script** (which is the hidden `venv` path running ComfyUI).
 
-このコードの最も重要なコアは `sys.executable` にあります。
-`sys.executable` とは、**「現在このPythonスクリプトを実行しているPython自体のパス（＝裏で動いているComfyUI用のvenvのパス）」**を指します。
+By running `subprocess.check_call([sys.executable, '-m', 'pip', 'install', package_name])`, we completely bypass the terminal environment and **force pip to install the package directly into the currently active ComfyUI virtual environment.** This solves the "invisible destination" problem entirely.
 
-`subprocess.check_call([sys.executable, '-m', 'pip', 'install', package_name])`
-を実行することで、外側のターミナル環境を完全に無視し、**「ComfyUIを動かしているまさにその仮想環境に対して、内側から直接 pip install コマンドを発行」**します。これにより、インストール先の指定不可能問題を突破できます。
+### 2. Reliable Detection via `try / __import__()`
+The standard `importlib.find_spec()` can sometimes return false positives if a package is broken, corrupted, or partially installed. 
+By wrapping an actual `__import__()` call in a `try/except` block, we guarantee that the auto-installer only triggers if the module is genuinely unable to load (`ModuleNotFoundError`).
 
-### ② `try / __import__()` による確実な欠損チェック
+### 3. Handling Name Discrepancies
+Some Python packages have different names for installation via pip and for importing in code (e.g., `pip install opencv-python` vs `import cv2`). 
+The `_REQUIRED_PACKAGES` array explicitly separates the "pip package name" from the "import check name." This precise mapping prevents the script from entering an infinite installation loop caused by false negatives.
 
-Python標準の `importlib.find_spec()` は、パッケージが破損していたり、不完全な状態でも「存在する」と誤判定を返すことがあります。
-そのため、実際に `__import__()` を試みて、それが `ModuleNotFoundError` で落ちた場合にのみインストールを走らせることで、堅牢性を担保しています。
-
-### ③ インポート名とpip名（パッケージ名）の不一致対応
-
-Python系のパッケージには、`pip install xxx` と打つ名前と、コード内で `import yyy` と記述する名前が違うものが多々あります（例: `pip install opencv-python` だがインポート時は `cv2`）。
-変数 `_REQUIRED_PACKAGES` にて、「pipインストール名」と「実際にインポート可能かを探る名前」を明示的にマッピング・分離することで、無限に再インストールが繰り返されるバグを防止しています。
-
-### まとめ
-
-この修正により、Vast.aiやRunPodにノードを `git clone` で直接手動導入した場合でも、ComfyUI起動時に**「自身の動いている環境を自らスキャンし、足りないものは自分自身に直接手当て（インストール）する」自己修復機能**が働くようになりました。ユーザーがターミナルでパスに思い悩む必要はなくなりました。
+### Summary
+With this update, even if SeedVR2 is manually installed via `git clone` on Vast.ai or RunPod, it will self-heal during ComfyUI startup. It scans its inner environment, detects missing dependencies, and forcefully injects them precisely where they belong, eliminating the need for users to troubleshoot hidden Python paths.
